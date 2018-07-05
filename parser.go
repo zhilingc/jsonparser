@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 )
@@ -604,6 +605,52 @@ func createInsertComponent(keys []string, setValue []byte, comma, object bool) [
 	return buffer.Bytes()
 }
 
+func createInsertComponentBuffer(keys []string, setValue io.Reader, comma, object bool) ([]byte, error) {
+	var buffer bytes.Buffer
+	isIndex := string(keys[0][0]) == "["
+	if comma {
+		buffer.WriteString(",")
+	}
+	if isIndex {
+		buffer.WriteString("[")
+	} else {
+		if object {
+			buffer.WriteString("{")
+		}
+		buffer.WriteString("\"")
+		buffer.WriteString(keys[0])
+		buffer.WriteString("\":")
+	}
+
+	for i := 1; i < len(keys); i++ {
+		if string(keys[i][0]) == "[" {
+			buffer.WriteString("[")
+		} else {
+			buffer.WriteString("{\"")
+			buffer.WriteString(keys[i])
+			buffer.WriteString("\":")
+		}
+	}
+	_, err := buffer.ReadFrom(setValue)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(keys) - 1; i > 0; i-- {
+		if string(keys[i][0]) == "[" {
+			buffer.WriteString("]")
+		} else {
+			buffer.WriteString("}")
+		}
+	}
+	if isIndex {
+		buffer.WriteString("]")
+	}
+	if object && !isIndex {
+		buffer.WriteString("}")
+	}
+	return buffer.Bytes(), nil
+}
+
 /*
 
 Del - Receives existing data structure, path to delete.
@@ -761,6 +808,93 @@ func Set(data []byte, setValue []byte, keys ...string) (value []byte, err error)
 		copy(value[0:startOffset], startComponent)
 		copy(value[startOffset:newEndOffset], setValue)
 		copy(value[newEndOffset:], endComponent)
+	}
+	return value, nil
+}
+
+/*
+
+SetStream - Receives existing data structure, path to set, and data stream with data
+to set at that key.
+
+Returns:
+`value` - modified byte array
+`err` - On any parsing error
+
+*/
+func SetStream(data []byte, setValue io.Reader, keys ...string) (value []byte, err error) {
+	// ensure keys are set
+	if len(keys) == 0 {
+		return nil, KeyPathNotFoundError
+	}
+
+	_, _, startOffset, endOffset, err := internalGet(data, keys...)
+	if err != nil {
+		if err != KeyPathNotFoundError {
+			// problem parsing the data
+			return nil, err
+		}
+		// full path doesnt exist
+		// does any subpath exist?
+		var depth int
+		for i := range keys {
+			_, _, start, end, sErr := internalGet(data, keys[:i+1]...)
+			if sErr != nil {
+				break
+			} else {
+				endOffset = end
+				startOffset = start
+				depth++
+			}
+		}
+		comma := true
+		object := false
+		if endOffset == -1 {
+			firstToken := nextToken(data)
+			// We can't set a top-level key if data isn't an object
+			if len(data) == 0 || data[firstToken] != '{' {
+				return nil, KeyPathNotFoundError
+			}
+			// Don't need a comma if the input is an empty object
+			secondToken := firstToken + 1 + nextToken(data[firstToken+1:])
+			if data[secondToken] == '}' {
+				comma = false
+			}
+			// Set the top level key at the end (accounting for any trailing whitespace)
+			// This assumes last token is valid like '}', could check and return error
+			endOffset = lastToken(data)
+		}
+		depthOffset := endOffset
+		if depth != 0 {
+			// if subpath is a non-empty object, add to it
+			if data[startOffset] == '{' && data[startOffset+1+nextToken(data[startOffset+1:])] != '}' {
+				depthOffset--
+				startOffset = depthOffset
+				// otherwise, over-write it with a new object
+			} else {
+				comma = false
+				object = true
+			}
+		} else {
+			startOffset = depthOffset
+		}
+		insertVal, err := createInsertComponentBuffer(keys[depth:], setValue, comma, object)
+		if err != nil {
+			return value, err
+		}
+		value = append(data[:startOffset], append(insertVal, data[depthOffset:]...)...)
+	} else {
+		// path currently exists
+		startComponent := data[:startOffset]
+		endComponent := data[endOffset:]
+
+		buf := bytes.NewBuffer(startComponent)
+		_, err := buf.ReadFrom(setValue)
+		if err != nil {
+			return value, err
+		}
+		buf.Write(endComponent)
+		value = buf.Bytes()
 	}
 	return value, nil
 }

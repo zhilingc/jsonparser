@@ -1097,6 +1097,19 @@ func TestSet(t *testing.T) {
 	)
 }
 
+func TestSetStream(t *testing.T) {
+	runSetTests(t, "SetStream()", setTests,
+		func(test SetTest) (value interface{}, dataType ValueType, err error) {
+			value, err = SetStream([]byte(test.json), bytes.NewReader([]byte(test.setData)), test.path...)
+			return
+		},
+		func(test SetTest, value interface{}) (bool, interface{}) {
+			expected := []byte(test.data.(string))
+			return bytes.Equal(expected, value.([]byte)), expected
+		},
+	)
+}
+
 func TestDelete(t *testing.T) {
 	runDeleteTests(t, "Delete()", deleteTests,
 		func(test DeleteTest) interface{} {
